@@ -1,0 +1,5 @@
+spacy
+transformers
+torch
+pymupdf
+requests

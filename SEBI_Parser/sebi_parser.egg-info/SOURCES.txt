@@ -1,0 +1,9 @@
+pyproject.toml
+sebi_parser/DocumentExtractor.py
+sebi_parser/__init__.py
+sebi_parser/sebi.py
+sebi_parser.egg-info/PKG-INFO
+sebi_parser.egg-info/SOURCES.txt
+sebi_parser.egg-info/dependency_links.txt
+sebi_parser.egg-info/requires.txt
+sebi_parser.egg-info/top_level.txt
