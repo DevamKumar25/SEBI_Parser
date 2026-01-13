@@ -16,18 +16,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"
 }
 
-USE_TRANSFORMER = False
-try:
-    from transformers import pipeline
-    summarizer = pipeline(
-        "summarization",
-        model="facebook/bart-large-cnn",
-        device=-1    # Use CPU
-    )
-    USE_TRANSFORMER = True
-except Exception:
-    print("Transformers not available, using fallback summary")
-
 
 # =======================
 # SEBI RSS PARSER
@@ -53,6 +41,22 @@ class SEBIRSSParser:
         ]
 
         self.extractor = DocumentExtractor()
+
+
+
+        self.summarizer = None
+        self.use_transformer = False
+
+        try:
+            from transformers import pipeline
+            self.summarizer = pipeline(
+                "summarization",
+                model="facebook/bart-large-cnn",
+                device=-1
+            )
+            self.use_transformer = True
+        except Exception:
+            self.use_transformer = False
 
     # =======================
     # RSS
@@ -189,12 +193,12 @@ class SEBIRSSParser:
         if not text or len(text) < 300:
             return text[:100] + "..."
 
-        if not USE_TRANSFORMER:
+        if not self.use_transformer:
             return text[:500] + "..."
 
         summaries = []
 
-        tokenizer = summarizer.tokenizer
+        tokenizer = self.summarizer.tokenizer
 
         # Token-safe chunking (instead of char-based)
         chunks = list(self.chunk_text(text, tokenizer))
@@ -361,9 +365,14 @@ class SEBIRSSParser:
 # ENTRY POINT
 # =======================
 
-if __name__ == "__main__":
+def parse_sebi_pdf():
     parser = SEBIRSSParser()
-    results = parser.run()
+    return parser.run()
+
+
+
+if __name__ == "__main__":
+    results = parse_sebi_pdf()
 
     if results:
         output_file = "sebi_results.json"
@@ -376,3 +385,5 @@ if __name__ == "__main__":
         print("="*70)
     else:
         print("\n No results")
+
+

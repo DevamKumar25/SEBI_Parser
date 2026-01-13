@@ -4,14 +4,16 @@ from datetime import datetime
 
 class DocumentExtractor:
     def __init__(self):
-        """Initialize the DocumentExtractor with spacy model"""
+        """Initialize the DocumentExtractor with spaCy model"""
         try:
             self.nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            print("Spacy model not found. Installing...")
-            import subprocess
-            subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
-            self.nlp = spacy.load("en_core_web_sm")
+        except OSError as e:
+            raise RuntimeError(
+                "\nspaCy model 'en_core_web_sm' is not installed.\n"
+                "Install it using:\n\n"
+                "  python -m spacy download en_core_web_sm\n"
+            ) from e
+
         
         # Define reference texts for comparison
         self.reference_adjudication = """
