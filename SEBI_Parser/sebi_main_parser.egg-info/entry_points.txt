@@ -1,0 +1,2 @@
+[console_scripts]
+sebi-parser = sebi_parser.cli:main

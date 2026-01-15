@@ -1,0 +1,6 @@
+spacy>=3.7.0
+transformers
+torch
+pymupdf
+requests
+beautifulsoup4
