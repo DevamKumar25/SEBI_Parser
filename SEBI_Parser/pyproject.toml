@@ -1,6 +1,6 @@
 [project]
 name = "sebi-main-parser"
-version = "0.1.9"
+version = "0.1.10"
 description = "SEBI PDF parser and summarizer"
 authors = [
   { name="Devam Kumar", email="devamkumar758@gmail.com" }

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: sebi-main-parser
-Version: 0.1.9
+Version: 0.1.10
 Summary: SEBI PDF parser and summarizer
 Author-email: Devam Kumar <devamkumar758@gmail.com>
 Requires-Python: >=3.8

@@ -4,8 +4,10 @@ from bs4 import BeautifulSoup
 import re
 import json
 from collections import defaultdict
-import fitz  # PyMuPDF
+import fitz  
 from .DocumentExtractor import DocumentExtractor
+from transformers.pipelines import pipeline
+
 
 
 # =======================
@@ -32,7 +34,7 @@ class SEBIRSSParser:
             "stock broker", "trading member",
             "clearing", "settlement", "margin",
             "kyc", "pms", "aif", "custodian",
-            "capital market", "securities"
+            "capital market", "securities", "auction", "regulations", "adjudication", "sebi", "stock options"
         ]
 
         self.irrelevant_keywords = [
@@ -47,16 +49,29 @@ class SEBIRSSParser:
         self.summarizer = None
         self.use_transformer = False
 
+    def get_summarizer(self):
+        if self.summarizer is not None:
+            return self.summarizer
+
         try:
-            from transformers import pipeline
+            print("Loading transformer summarizer...")
+
             self.summarizer = pipeline(
                 "summarization",
                 model="facebook/bart-large-cnn",
-                device=-1
+                device=-1,
+                framework="pt"
             )
+
             self.use_transformer = True
-        except Exception:
+            return self.summarizer
+
+        except Exception as e:
+            print("Transformer load failed:")
+            print(e)
             self.use_transformer = False
+            return None
+    
 
     # =======================
     # RSS
@@ -108,7 +123,7 @@ class SEBIRSSParser:
 
     def extract_pdf_links(self, html_url):
         """Extract PDF links from HTML page"""
-        r = requests.get(html_url, headers=HEADERS, timeout=30)
+        r = requests.get(html_url, headers=HEADERS, timeout=80)
         r.raise_for_status()
         soup = BeautifulSoup(r.content, "html.parser")
 
@@ -166,13 +181,19 @@ class SEBIRSSParser:
     # =======================
 
     def chunk_text(self, text, tokenizer, max_tokens=900):
-        """Split text into token-safe chunks for summarization"""
+        """
+        Split text into token-safe chunks for summarization.
+        Increased default to 900 tokens for better context preservation.
+        """
         tokens = tokenizer(
             text,
-            return_tensors="pt",  # PyTorch tensors
-            truncation=False
+            return_tensors="pt",
+            truncation=False,
+            add_special_tokens=False  
         )["input_ids"][0]
 
+        chunks = []
+        
         for i in range(0, len(tokens), max_tokens):
             chunk_tokens = tokens[i:i + max_tokens]
             chunk_text = tokenizer.decode(
@@ -180,80 +201,158 @@ class SEBIRSSParser:
                 skip_special_tokens=True
             )
 
-            if len(chunk_text.strip()) > 100:
-                yield chunk_text
+            # Only yield chunks with meaningful content
+            if len(chunk_text.strip()) > 50:
+                chunks.append(chunk_text)
+        
+        return chunks
 
 
-    # =======================
-    # SUMMARIZATION
-    # =======================
-
-    def summarize_text(self, text):
-        """Summarize text using NLP or fallback method"""
+    def summarize_short(self, text):
         if not text or len(text) < 300:
-            return text[:100] + "..."
+            return text
 
-        if not self.use_transformer:
-            return text[:500] + "..."
+        summarizer = self.get_summarizer()
+        if not summarizer:
+            return text[:200] + "..."
 
-        summaries = []
+        tokenizer = summarizer.tokenizer
+        print(f" tokenizer: {len(tokenizer)}")
 
-        tokenizer = self.summarizer.tokenizer
+        # ---------- PASS 1: chunk summaries ----------
+        chunks = self.chunk_text(text, tokenizer, max_tokens=900)
+        if not chunks:
+            return text[:200] + "..."
 
-        # Token-safe chunking (instead of char-based)
-        chunks = list(self.chunk_text(text, tokenizer))
+        partial_summaries = []
 
-        for chunk in chunks:
-            input_len = len(chunk.split())
-
-            # Skip very small chunks
-            if input_len < 80:
+        for idx, chunk in enumerate(chunks):
+            word_count = len(chunk.split())
+            if word_count < 80:
                 continue
 
-            max_len = min(130, int(input_len * 0.6))
-            min_len = min(50, int(input_len * 0.3))
-
-            # Ensure valid bounds
-            if min_len >= max_len:
-                min_len = max(20, max_len - 10)
+            max_len = min(180, int(word_count * 0.4))
+            min_len = min(80, int(word_count * 0.25))
 
             try:
-                s = summarizer(
+                out = summarizer(
                     chunk,
                     max_length=max_len,
                     min_length=min_len,
                     do_sample=False,
                     truncation=True
                 )
-                summaries.append(s[0]["summary_text"])
+                partial_summaries.append(out[0]["summary_text"])
+            except Exception as e:
+                print(f"Chunk {idx + 1} summary failed: {e}")
+                partial_summaries.append(chunk[:300] + "...")
+
+        if not partial_summaries:
+            return text[:200] + "..."
+
+        # ---------- PASS 2: GROUP chunk summaries ----------
+        GROUP_SIZE = 4
+        grouped_texts = []
+
+        for i in range(0, len(partial_summaries), GROUP_SIZE):
+            group = partial_summaries[i:i + GROUP_SIZE]
+            grouped_texts.append(" ".join(group))
+
+        # ---------- PASS 3: section-level summaries ----------
+        section_summaries = []
+
+        for idx, group_text in enumerate(grouped_texts):
+            group_words = len(group_text.split())
+            if group_words < 100:
+                section_summaries.append(group_text)
+                continue
+
+            max_len = min(200, int(group_words * 0.4))
+            min_len = min(100, int(group_words * 0.25))
+
+            try:
+                out = summarizer(
+                    group_text,
+                    max_length=max_len,
+                    min_length=min_len,
+                    do_sample=False,
+                    truncation=True
+                )
+                section_summaries.append(out[0]["summary_text"])
+            except Exception as e:
+                print(f"Group {idx + 1} summary failed: {e}")
+                section_summaries.append(group_text[:300] + "...")
+
+        # ---------- FINAL OUTPUT (NO PASS 4) ----------
+        return " ".join(section_summaries)
+
+    # =======================
+    # SUMMARIZATION - LONG 
+    # =======================
+
+    
+    def summarize_long(self, text):
+
+        if not text or len(text) < 300:
+            return text
+
+        summarizer = self.get_summarizer()
+        if not summarizer:
+            return text[:300] + "..."
+
+        tokenizer = summarizer.tokenizer
+
+        # -----------------------------
+        # Step 1: Token-safe chunking
+        # -----------------------------
+        chunks = self.chunk_text(text, tokenizer, max_tokens=900)
+        if not chunks:
+            return text[:300] + "..."
+
+        summaries = []
+
+        # -----------------------------
+        # Step 2: Summarize each chunk
+        # -----------------------------
+        for chunk in chunks:
+            word_count = len(chunk.split())
+
+            # Skip meaningless chunks
+            if word_count < 60:
+                continue
+
+            # Light compression (retain details)
+            max_len = min(400, int(word_count * 0.6))
+            min_len = min(150, int(word_count * 0.4))
+
+            if min_len >= max_len:
+                min_len = max(40, max_len - 40)
+
+            try:
+                result = summarizer(
+                    chunk,
+                    max_length=max_len,
+                    min_length=min_len,
+                    do_sample=False,
+                    truncation=True
+                )
+                summaries.append(result[0]["summary_text"])
+
             except Exception:
-                summaries.append(chunk[:300] + "...")
+                # Safe fallback: include partial original content
+                print(f"long summaries chunks failed {len(chunk)}")
+                summaries.append(chunk[:800] + "...")
 
         if not summaries:
-            return text[:500] + "..."
+            print("summaries not found")
+            return text[:2000] + "..."
 
-        combined = " ".join(summaries)
+        # -----------------------------
+        # Step 3: Combine summaries ONLY
+        # -----------------------------
+        final_summary = "\n\n".join(summaries)
 
-        # Final summary with safe length calculation
-        combined_len = len(combined.split())
-        max_len = min(180, int(combined_len * 0.6))
-        min_len = min(80, int(combined_len * 0.3))
-
-        if min_len >= max_len:
-            min_len = max(40, max_len - 20)
-
-        try:
-            final = summarizer(
-                combined,
-                max_length=max_len,
-                min_length=min_len,
-                do_sample=False,
-                truncation=True
-            )
-            return final[0]["summary_text"]
-        except Exception:
-            return combined[:600] + "..."
-
+        return final_summary
 
 
     def pdf_to_xml(self, pdf_url, title):
@@ -309,23 +408,35 @@ class SEBIRSSParser:
             print(f"Processing item {idx}: {item['title'][:60]}... (score: {score})")
 
             pdf_links = self.extract_pdf_links(item["link"])
+            
+            # Initialize variables with defaults
+            full_text = ""
+            extracted_data = {}
+            xml_content = ""
+            long_summary = "No PDF available"
+            short_summary = "No PDF available"
 
             if pdf_links:
                 try:
                     print(f"  Extracting from PDF: {pdf_links[0]}")
                     text = self.extract_text_from_pdf(pdf_links[0])
+                    textlen = len(text)
+                    print(f"  Extracted {textlen} characters")
+                    if textlen > 100000:
+                        continue
                     full_text = text
                     extracted_data = self.extractor.extract_document_fields(full_text)
                     xml_content = self.pdf_to_xml(pdf_links[0], item["title"])
-                    print(f"  Extracted {len(text)} characters")
-                    summary = self.summarize_text(text)
-                    print(f"  Summary generated: {len(summary)} characters")
+                    short_summary = self.summarize_short(text)
+                    long_summary = self.summarize_long(text)
+                    print(f"  Long summary generated: {len(long_summary)} characters")
+                    print(f"  Short summary generated: {len(short_summary)} characters")
                 except Exception as e:
                     print(f"  Error processing PDF: {e}")
-                    summary = f"Error processing PDF: {str(e)}"
+                    long_summary = f"Error processing PDF: {str(e)}"
+                    short_summary = f"Error processing PDF: {str(e)}"
             else:
                 print(f"  No PDF found")
-                summary = "No PDF available"
 
             results[item["pub_date"]][f"item_{idx}"] = {
                 "score": score,
@@ -333,13 +444,15 @@ class SEBIRSSParser:
                 "publish_date": item["pub_date"],
                 "link": item["link"],
                 "pdf_links": pdf_links,
-                "summary": summary,
+                "long_summary": long_summary,
+                "short_summary": short_summary,
                 "extracted_metadata": extracted_data,
                 "full_text": full_text,
                 "xml_content": xml_content
             }
 
         return dict(results)
+    
 
     def run(self):
         """Main execution method"""
@@ -360,7 +473,7 @@ class SEBIRSSParser:
         
         return results
 
-
+9835786089
 # =======================
 # ENTRY POINT
 # =======================
