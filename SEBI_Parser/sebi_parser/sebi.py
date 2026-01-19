@@ -422,7 +422,7 @@ class SEBIRSSParser:
                     text = self.extract_text_from_pdf(pdf_links[0])
                     textlen = len(text)
                     print(f"  Extracted {textlen} characters")
-                    if textlen > 100000:
+                    if textlen > 150000:
                         continue
                     full_text = text
                     extracted_data = self.extractor.extract_document_fields(full_text)
