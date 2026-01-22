@@ -28,7 +28,7 @@ class DocumentExtractor:
         Capacity Planning, Software Testing, BCP, DRS, Disaster Recovery,
         Reporting Requirements, LAMA, Monitoring Mechanism, IBT, STWT,
         Samuhik Prativedan Manch, Common Reporting Platform, 10000 clients,
-        Financial Disincentive, Compliance, SEBI Circular
+        Financial Disincentive, Compliance, SEBI Circular, sebi
         """
 
     def detect_document_type(self, full_text):
