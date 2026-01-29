@@ -1,6 +1,6 @@
 [project]
 name = "sebi-main-parser"
-version = "0.1.10"
+version = "1.0.0"
 description = "SEBI PDF parser and summarizer"
 authors = [
   { name="Devam Kumar", email="devamkumar758@gmail.com" }
@@ -19,7 +19,6 @@ dependencies = [
 
 [project.scripts]
 sebi-parser = "sebi_parser.cli:main"
-
 
 [tool.setuptools.packages.find]
 where = ["."]

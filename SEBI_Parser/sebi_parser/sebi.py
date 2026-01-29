@@ -7,6 +7,10 @@ from collections import defaultdict
 import fitz  
 from .DocumentExtractor import DocumentExtractor
 from transformers.pipelines import pipeline
+from multiprocessing import Pool
+from datetime import datetime
+import os
+import time
 
 
 
@@ -17,6 +21,9 @@ from transformers.pipelines import pipeline
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"
 }
+NUM_WORKERS = 2
+TIMEOUT_PER_ITEM = 300
+_global_summarizer = None
 
 
 # =======================
@@ -49,29 +56,57 @@ class SEBIRSSParser:
         self.summarizer = None
         self.use_transformer = False
 
+    # def get_summarizer(self):
+    #     if self.summarizer is not None:
+    #         return self.summarizer
+
+    #     try:
+    #         print("Loading transformer summarizer...")
+
+    #         self.summarizer = pipeline(
+    #             "summarization",
+    #             model="facebook/bart-large-cnn",
+    #             device=-1,
+    #             framework="pt"
+    #         )
+
+    #         self.use_transformer = True
+    #         return self.summarizer
+
+    #     except Exception as e:
+    #         print("Transformer load failed:")
+    #         print(e)
+    #         self.use_transformer = False
+    #         return None
+    
+
     def get_summarizer(self):
-        if self.summarizer is not None:
-            return self.summarizer
+        """Load summarizer once per worker process"""
+        global _global_summarizer
+        
+        if _global_summarizer is not None:
+            return _global_summarizer
 
         try:
-            print("Loading transformer summarizer...")
-
-            self.summarizer = pipeline(
+            from transformers import pipeline
+            print(f"[PID {os.getpid()}] Loading transformer summarizer...")
+            
+            _global_summarizer = pipeline(
                 "summarization",
                 model="facebook/bart-large-cnn",
                 device=-1,
                 framework="pt"
             )
-
-            self.use_transformer = True
-            return self.summarizer
-
+            
+            if _global_summarizer.model.config.max_length is None:
+                _global_summarizer.model.config.max_length = 1024
+            
+            print(f"[PID {os.getpid()}] ✅ Summarizer loaded")
+            return _global_summarizer
+            
         except Exception as e:
-            print("Transformer load failed:")
-            print(e)
-            self.use_transformer = False
+            print(f"[PID {os.getpid()}] ❌ Transformer load failed: {e}")
             return None
-    
 
     # =======================
     # RSS
@@ -121,42 +156,36 @@ class SEBIRSSParser:
     # PDF LINK EXTRACTION
     # =======================
 
-    def extract_pdf_links(self, html_url):
+    def extract_pdf_links(self,html_url):
+        if html_url.lower().endswith(".pdf"):
+            return [html_url]
         """Extract PDF links from HTML page"""
-        r = requests.get(html_url, headers=HEADERS, timeout=80)
+        r = requests.get(html_url, headers=HEADERS, timeout=120)
         r.raise_for_status()
-        soup = BeautifulSoup(r.content, "html.parser")
 
+        soup = BeautifulSoup(r.content, "html.parser")
         pdf_links = set()
 
-        # Anchor tags
-        for a in soup.find_all("a", href=True):
+        # ---------- Anchor tags ----------
+        for a in soup.find_all("a",href=True):
             href = a["href"].strip()
             if not href.lower().endswith(".pdf"):
                 continue
 
-            if href.startswith("http"):
-                pdf_links.add(href)
-            elif href.startswith("/"):
-                pdf_links.add("https://www.sebi.gov.in" + href)
-            else:
-                base = html_url.rsplit("/", 1)[0]
-                pdf_links.add(base + "/" + href)
+            if href.startswith("https") and href.endswith(".pdf"):
+                pdf_links.add(href)  
 
-        # Iframes with ?file= parameter
         for iframe in soup.find_all("iframe", src=True):
-            src = iframe["src"]
+            src = iframe["src"].strip()
             match = re.search(r'file=(https?://[^&]+\.pdf)', src)
             if match:
                 from urllib.parse import unquote
                 pdf_links.add(unquote(match.group(1)))
             elif src.lower().endswith(".pdf"):
-                if src.startswith("http"):
+                if src.startswith("https") and src.endswith(".pdf"):
                     pdf_links.add(src)
-                elif src.startswith("/"):
-                    pdf_links.add("https://www.sebi.gov.in" + src)
 
-        return list(pdf_links)
+        return list(pdf_links)    
 
     # =======================
     # PDF TEXT EXTRACTION
@@ -395,55 +424,168 @@ class SEBIRSSParser:
     # MAIN PROCESS
     # =======================
 
-    def process_items(self, items):
-        """Process all RSS items and generate results"""
-        results = defaultdict(dict)
+    # def process_items(self, items):
+    #     """Process all RSS items and generate results"""
+    #     results = defaultdict(dict)
 
-        for idx, item in enumerate(items, 1):
-            score = self.calculate_score(item["title"], item["description"])
+    #     for idx, item in enumerate(items, 1):
+    #         score = self.calculate_score(item["title"], item["description"])
             
+    #         if score < 2:
+    #             continue
+
+    #         print(f"Processing item {idx}: {item['title'][:60]}... (score: {score})")
+
+    #         pdf_links = self.extract_pdf_links(item["link"])
+            
+    #         # Initialize variables with defaults
+    #         full_text = ""
+    #         extracted_data = {}
+    #         xml_content = ""
+    #         long_summary = "No PDF available"
+    #         short_summary = "No PDF available"
+
+    #         if pdf_links:
+    #             try:
+    #                 print(f"  Extracting from PDF: {pdf_links[0]}")
+    #                 text = self.extract_text_from_pdf(pdf_links[0])
+    #                 textlen = len(text)
+    #                 print(f"  Extracted {textlen} characters")
+    #                 if textlen > 150000:
+    #                     continue
+    #                 full_text = text
+    #                 extracted_data = self.extractor.extract_document_fields(full_text)
+    #                 xml_content = self.pdf_to_xml(pdf_links[0], item["title"])
+    #                 t = time.time()
+    #                 short_summary = self.summarize_short(text)
+    #                 t_s = time.time() - t
+    #                 print(f"  Short summary generated in {t_s:.2f} seconds")
+    #                 print(f"  Short summary generated: {len(short_summary)} characters")
+    #                 t_la = time.time()
+    #                 long_summary = self.summarize_long(text)
+    #                 t_l = time.time() - t_la
+    #                 print(f"  Long summary generated in {t_l:.2f} seconds")
+    #                 print(f"  Long summary generated: {len(long_summary)} characters")
+    #             except Exception as e:
+    #                 print(f"  Error processing PDF: {e}")
+    #                 long_summary = f"Error processing PDF: {str(e)}"
+    #                 short_summary = f"Error processing PDF: {str(e)}"
+    #         else:
+    #             print(f"  No PDF found")
+
+    #         results[item["pub_date"]][f"item_{idx}"] = {
+    #             "score": score,
+    #             "title": item["title"],
+    #             "publish_date": item["pub_date"],
+    #             "link": item["link"],
+    #             "pdf_links": pdf_links,
+    #             "long_summary": long_summary,
+    #             "short_summary": short_summary,
+    #             "extracted_metadata": extracted_data,
+    #             "full_text": full_text,
+    #             "xml_content": xml_content
+    #         }
+
+    #     return dict(results)
+
+
+
+
+    def process_single_item(self, item):
+        """Process single RSS item"""
+        parser = self
+        pid = os.getpid()
+
+        # Initialize defaults
+        full_text = ""
+        extracted_data = {}
+        xml_content = ""
+        long_summary = "No PDF available"
+        short_summary = "No PDF available"
+        pdf_url = None
+        pdfs = []
+
+        try:
+            print(f"[PID {pid}] Processing: {item['title'][:60]}...")
+
+            score = parser.calculate_score(item["title"], item["description"])
+            print(f"[PID {pid}] Score: {score}")
+
             if score < 2:
-                continue
+                print(f"[PID {pid}] ❌ Low score, skipping")
+                return None
 
-            print(f"Processing item {idx}: {item['title'][:60]}... (score: {score})")
+            print(f"[PID {pid}] Extracting PDF links...")
+            pdfs = parser.extract_pdf_links(item["link"])
 
-            pdf_links = self.extract_pdf_links(item["link"])
-            
-            # Initialize variables with defaults
-            full_text = ""
-            extracted_data = {}
-            xml_content = ""
-            long_summary = "No PDF available"
-            short_summary = "No PDF available"
+            if not pdfs:
+                print(f"[PID {pid}] ⚠️ No PDF found")
+                return {
+                    "score": score,
+                    "title": item["title"],
+                    "publish_date": item["pub_date"],
+                    "link": item["link"],
+                    "pdf_url": None,
+                    "pdf_links": [],
+                    "long_summary": "No PDF found",
+                    "short_summary": "No PDF found",
+                    "extracted_metadata": {},
+                    "full_text": "",
+                    "xml_content": ""
+                }
 
-            if pdf_links:
-                try:
-                    print(f"  Extracting from PDF: {pdf_links[0]}")
-                    text = self.extract_text_from_pdf(pdf_links[0])
-                    textlen = len(text)
-                    print(f"  Extracted {textlen} characters")
-                    if textlen > 150000:
-                        continue
-                    full_text = text
-                    extracted_data = self.extractor.extract_document_fields(full_text)
-                    xml_content = self.pdf_to_xml(pdf_links[0], item["title"])
-                    short_summary = self.summarize_short(text)
-                    long_summary = self.summarize_long(text)
-                    print(f"  Long summary generated: {len(long_summary)} characters")
-                    print(f"  Short summary generated: {len(short_summary)} characters")
-                except Exception as e:
-                    print(f"  Error processing PDF: {e}")
-                    long_summary = f"Error processing PDF: {str(e)}"
-                    short_summary = f"Error processing PDF: {str(e)}"
-            else:
-                print(f"  No PDF found")
+            pdf_url = pdfs[0]
+            print(f"[PID {pid}] Extracting text from PDF...")
 
-            results[item["pub_date"]][f"item_{idx}"] = {
+            text = parser.extract_text_from_pdf(pdf_url)
+            text_len = len(text)
+            print(f"[PID {pid}] Extracted {text_len} characters")
+
+            if text_len == 0:
+                print(f"[PID {pid}] ⚠️ Empty PDF, skipping")
+                return {
+                    "score": score,
+                    "title": item["title"],
+                    "publish_date": item["pub_date"],
+                    "link": item["link"],
+                    "pdf_url": pdf_url,
+                    "pdf_links": pdfs,
+                    "long_summary": "Empty PDF - no text extracted",
+                    "short_summary": "Empty PDF - no text extracted",
+                    "extracted_metadata": {},
+                    "full_text": "",
+                    "xml_content": ""
+                }
+
+            if text_len > 100000:
+                print(f"[PID {pid}] ⚠️ PDF too large, skipping summarization")
+                return None
+
+            full_text = text
+
+            print(f"[PID {pid}] Extracting metadata...")
+            extracted_data = parser.extractor.extract_document_fields(full_text)
+
+            print(f"[PID {pid}] Generating short summary...")
+            short_summary = parser.summarize_short(text)
+            print(f"[PID {pid}] Short summary: {len(short_summary)} chars")
+
+            print(f"[PID {pid}] Generating long summary...")
+            long_summary = parser.summarize_long(text)
+            print(f"[PID {pid}] Long summary: {len(long_summary)} chars")
+
+            print(f"[PID {pid}] Converting to XML...")
+            xml_content = parser.pdf_to_xml(pdf_url, item["title"], full_text)
+
+            print(f"[PID {pid}] ✅ Success")
+
+            return {
                 "score": score,
                 "title": item["title"],
                 "publish_date": item["pub_date"],
                 "link": item["link"],
-                "pdf_links": pdf_links,
+                "pdf_url": pdf_url,
+                "pdf_links": pdfs,
                 "long_summary": long_summary,
                 "short_summary": short_summary,
                 "extracted_metadata": extracted_data,
@@ -451,7 +593,78 @@ class SEBIRSSParser:
                 "xml_content": xml_content
             }
 
-        return dict(results)
+        except Exception as e:
+            print(f"[PID {pid}] ❌ Error: {str(e)}")
+            return {
+                "score": score if 'score' in locals() else 0,
+                "title": item["title"],
+                "publish_date": item["pub_date"],
+                "link": item["link"],
+                "pdf_url": pdf_url,
+                "pdf_links": pdfs,
+                "long_summary": f"Error: {str(e)}",
+                "short_summary": f"Error: {str(e)}",
+                "extracted_metadata": extracted_data,
+                "full_text": full_text,
+                "xml_content": xml_content
+            }
+
+
+    
+# def run_parallel(items):
+#     """Run parallel processing with timeout"""
+#     results = []
+
+#     with Pool(NUM_WORKERS) as pool:
+#         # Submit all jobs
+#         job_data = []
+#         for item in items:
+#             job = pool.apply_async(process_single_item, (item,))
+#             job_data.append((item, job))
+
+#         # Collect results in order
+#         for item, job in job_data:
+#             try:
+#                 res = job.get(timeout=TIMEOUT_PER_ITEM)
+#                 if res:
+#                     results.append(res)
+#                 else:
+#                     print(f"⚠️ Skipped: {item['title'][:40]}")
+#             except Exception as e:
+#                 print(f"❌ Timeout/Error for {item['title'][:40]}: {str(e)}")
+#                 results.append({
+#                     "score": 0,
+#                     "title": item["title"],
+#                     "publish_date": item["pub_date"],
+#                     "link": item["link"],
+#                     "pdf_url": None,
+#                     "pdf_links": [],
+#                     "long_summary": f"Timeout: {str(e)}",
+#                     "short_summary": f"Timeout: {str(e)}",
+#                     "extracted_metadata": {},
+#                     "full_text": "",
+#                     "xml_content": "",
+#                     "error": f"Timeout: {str(e)}"
+#                 })
+
+#     return results
+
+
+
+    def run_parallel_imap(self, items):
+        results = []
+
+        with Pool(NUM_WORKERS) as pool:
+            for res in pool.imap_unordered(self.process_single_item, items):
+                if res is None:
+                    results.append({
+                        "error": "Skipped due to low score or filtering"
+                    })
+                else:
+                    results.append(res)
+
+        return results
+    
     
 
     def run(self):
@@ -468,12 +681,19 @@ class SEBIRSSParser:
         items = self.parse_xml(xml)
         print(f"Found {len(items)} items")
         
-        print("\n[3/3] Processing items...")
-        results = self.process_items(items)
+        # print("\n[3/3] Processing items...")
+        # results = self.process_items(items)
+
+        print(f"\nProcessing {len(items)} items using {NUM_WORKERS} workers")
+        print(f"Timeout per item: {TIMEOUT_PER_ITEM} seconds\n")
+
+        results = self.run_parallel_imap(items)
+
+        
         
         return results
 
-9835786089
+
 # =======================
 # ENTRY POINT
 # =======================
