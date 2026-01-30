@@ -22,12 +22,14 @@ murmurhash==1.0.15
 networkx==3.4.2
 numpy==2.2.6
 packaging==25.0
+pillow==12.1.0
 preshed==3.0.12
 psutil==7.2.1
 pydantic==2.12.5
 pydantic_core==2.41.5
 PyMuPDF==1.26.7
 PyPDF2==3.0.1
+pytesseract==0.3.13
 PyYAML==6.0.3
 regex==2025.11.3
 requests==2.32.5

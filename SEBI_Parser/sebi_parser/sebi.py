@@ -11,6 +11,12 @@ from multiprocessing import Pool
 from datetime import datetime
 import os
 import time
+from urllib.parse import urljoin, unquote
+import pytesseract
+from PIL import Image 
+import io 
+
+
 
 
 
@@ -156,6 +162,7 @@ class SEBIRSSParser:
     # PDF LINK EXTRACTION
     # =======================
 
+
     def extract_pdf_links(self,html_url):
         if html_url.lower().endswith(".pdf"):
             return [html_url]
@@ -177,16 +184,21 @@ class SEBIRSSParser:
 
         for iframe in soup.find_all("iframe", src=True):
             src = iframe["src"].strip()
-            match = re.search(r'file=(https?://[^&]+\.pdf)', src)
+
+            # Case 1: PDF wrapped inside file=
+            match = re.search(r'file=(https?://[^&]+\.pdf)', src, re.IGNORECASE)
             if match:
-                from urllib.parse import unquote
                 pdf_links.add(unquote(match.group(1)))
-            elif src.lower().endswith(".pdf"):
-                if src.startswith("https") and src.endswith(".pdf"):
-                    pdf_links.add(src)
+                continue
+
+            # Case 2: iframe directly points to PDF
+            if src.lower().endswith(".pdf"):
+                pdf_links.add(src)
+            
 
         return list(pdf_links)    
 
+  
     # =======================
     # PDF TEXT EXTRACTION
     # =======================
@@ -200,7 +212,16 @@ class SEBIRSSParser:
         text = ""
 
         for page in doc:
-            text += page.get_text()
+            # text += page.get_text()
+            text = page.get_text().strip()
+
+            # If no text → OCR
+            if not text:
+                pix = page.get_pixmap(dpi=300)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                text = pytesseract.image_to_string(img)
+
+        text += " " + text    
 
         text = re.sub(r'\s+', ' ', text).strip()
         return text

@@ -14,7 +14,9 @@ dependencies = [
   "torch",
   "pymupdf",
   "requests",
-  "beautifulsoup4"
+  "beautifulsoup4",
+  "pytesseract",
+  "pillow"
 ]
 
 [project.scripts]
@@ -23,4 +25,3 @@ sebi-parser = "sebi_parser.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sebi_parser*"]
-
